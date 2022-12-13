@@ -1,0 +1,319 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+## R Markdown
+
+```{r}
+library(ArchR)
+library(tidyr)
+
+addArchRGenome("hg38")
+addArchRThreads(threads = 1) 
+
+TileMatParams <- list()
+TileMatParams$tileSize <- 500
+```
+
+```{r}
+proj <- readRDS("~/Documents/workspace/projects/synfib_multiome/analysis/archr/noRA379_harmony/Save-ArchR-Project.rds")
+```
+
+
+## Create Arrow Files
+
+```{r}
+input_files <- c(   normal = '../../../data/nml_atac_fragments.tsv.gz',
+                    RA385 = '../../../data/RA385_atac_fragments.tsv.gz',
+                    RA395 = '../../../data/RA395_atac_fragments.tsv.gz',
+                    RA407 = '../../../data/RA407_atac_fragments.tsv.gz',
+                    RA362 = '../../../data/Sample_disso_D_cDNA_IGO_06000/atac_fragments.tsv.gz',
+                    RA363 = '../../../data/363D/atac_fragments.tsv.gz')
+
+ArrowFiles <- createArrowFiles(
+  inputFiles = input_files,
+  sampleNames = names(input_files),
+  filterTSS = 4, 
+  filterFrags = 2000, 
+  addTileMat = TRUE,
+  addGeneScoreMat = TRUE,
+  excludeChr = c('chrM'),
+)
+
+proj <- ArchRProject(
+  ArrowFiles = ArrowFiles,
+  outputDirectory = "./",
+  copyArrows = FALSE,
+  
+)
+```
+
+```{r}
+# Load RNA-seq metadata
+cluster_harmony <- read.csv('./harmony_6samples_metadata.csv', row.names = 1)
+row.names(cluster_harmony) <- paste(cluster_harmony$sample_id, '#', cluster_harmony$barcodes, sep = '')
+cluster_harmony <- cluster_harmony[row.names(proj@cellColData),]
+proj@cellColData$subtype_fine <- cluster_harmony$subtype_fine
+```
+
+```{r}
+
+proj <- addIterativeLSI(
+    ArchRProj = proj,
+    useMatrix = "TileMatrix",
+    name = "IterativeLSI",
+    varFeatures = 50000,
+    dimsToUse = 1:30,
+    force = TRUE,
+    corCutOff = 0.3
+
+)
+```
+
+```{r}
+proj <- addUMAP(
+    ArchRProj = proj, 
+    reducedDims = "IterativeLSI", 
+    name = "UMAP", 
+    nNeighbors = 50, 
+    minDist = 0.05, 
+    corCutOff = 0.35, 
+    metric = "cosine",
+    seed = 3,
+    saveModel = FALSE,
+    force = TRUE
+)
+```
+
+```{r}
+proj <- addClusters(
+    input = proj,
+    reducedDims = "IterativeLSI",
+    method = "Seurat",
+    maxClusters = 14,
+    name = "Clusters_noHarmony",
+    corCutOff = 0.35, 
+    seed = 3,
+    force = TRUE,
+    knnAssign = 100
+)
+
+```
+
+```{r}
+p1 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "Sample", embedding = "UMAP")
+p2 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "Clusters_noHarmony", embedding = "UMAP")
+p3 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "nFrags", embedding = "UMAP")
+p4 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "subtype_fine", embedding = "UMAP")
+
+p1
+p2
+p3
+p4
+
+```
+
+# Harmony Batch Correction
+```{r}
+proj <- addHarmony(
+    ArchRProj = proj,
+    reducedDims = "IterativeLSI",
+    name = "Harmony",
+    groupBy = "Sample"
+)
+```
+
+```{r}
+proj <- addUMAP(
+    ArchRProj = proj, 
+    reducedDims = "Harmony", 
+    name = "UMAP_Harmony", 
+    nNeighbors = 50, 
+    minDist = 0.05, 
+    corCutOff = 0.35, 
+    metric = "cosine",
+    seed = 3,
+    saveModel = FALSE,
+    force = TRUE
+)
+```
+
+```{r}
+proj <- addClusters(
+    input = proj,
+    reducedDims = "Harmony",
+    method = "Seurat",
+    maxClusters = 14,
+    name = "Clusters",
+    corCutOff = 0.35, 
+    seed = 3,
+    force = TRUE,
+    knnAssign = 100
+)
+
+```
+
+```{r}
+p1 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "Sample", embedding = "UMAP_Harmony")
+p2 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "Clusters", embedding = "UMAP_Harmony")
+p3 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "nFrags", embedding = "UMAP_Harmony")
+p4 <- plotEmbedding(ArchRProj = proj, colorBy = "cellColData", name = "subtype_fine", embedding = "UMAP_Harmony")
+
+p1
+p2
+p3
+p4
+
+```
+
+
+```{r, fig.width=6, fig.height=6}  
+rbPal <- colorRampPalette(c('red','blue'))
+par(mfrow = c(3, 3))  # 3 rows and 2 columns
+for (i in unique(proj@cellColData$subtype_fine)) {
+  plot(proj@embeddings$UMAP$df$`Harmony#UMAP_Dimension_1`, main = i,   
+         proj@embeddings$UMAP$df$`Harmony#UMAP_Dimension_2`, pch = 1,
+     col = alpha(c('grey','black')[(proj@cellColData$subtype_fine == as.character(i))*1 + 1], 0.3),
+     , cex = 0.1)
+
+  points(proj@embeddings$UMAP$df$`Harmony#UMAP_Dimension_1`[(proj@cellColData$subtype_fine == as.character(i))],    
+         proj@embeddings$UMAP$df$`Harmony#UMAP_Dimension_2`[(proj@cellColData$subtype_fine == as.character(i))], pch = 9,
+     col = 'black'
+     , cex = 0.2,
+     )
+  i
+}
+
+```
+
+```{r, fig.width=1.2, fig.height=1.5}  
+cM <- confusionMatrix(paste0(proj$Clusters), paste0(proj$Sample))
+library(pheatmap)
+cM <- cM / Matrix::rowSums(cM)
+p <- pheatmap::pheatmap(
+    mat = as.matrix(cM), 
+    color = paletteContinuous("whiteBlue"), 
+    border_color = "black"
+)
+p
+```
+
+```{r, fig.width=1.05, fig.height=2}  
+cM <- confusionMatrix(paste0(proj$Clusters), paste0(proj$subtype_fine))
+library(pheatmap)
+cM <- cM / Matrix::rowSums(cM)
+p <- pheatmap::pheatmap(
+    mat = as.matrix(cM), 
+    color = paletteContinuous("whiteBlue"), 
+    border_color = "black"
+)
+p
+```
+
+
+# Peak Calling
+```{r}
+peaks_a1 <- data.frame(data.table::fread("../7samples/macs_peaks/Fragments_normal_peaks.narrowPeak", sep="\t"))
+peaks_a1 <- makeGRangesFromDataFrame(
+	df=peaks_a1, 
+	keep.extra.columns=TRUE, 
+	seqnames.field="V1", 
+	start.field = "V2",
+	end.field = "V3",
+	strand.field = "V6",
+	starts.in.df.are.0based=TRUE
+)
+
+peaks_c1 <- data.frame(data.table::fread("../7samples/macs_peaks/Fragments_RA407_peaks.narrowPeak", sep="\t"))
+peaks_c1 <- makeGRangesFromDataFrame(
+	df=peaks_c1, 
+	keep.extra.columns=TRUE, 
+	seqnames.field="V1", 
+	start.field = "V2",
+	end.field = "V3",
+	strand.field = "V6",
+	starts.in.df.are.0based=TRUE
+)
+peaks_d1 <- data.frame(data.table::fread("../7samples/macs_peaks/Fragments_RA395_peaks.narrowPeak", sep="\t"))
+peaks_d1 <- makeGRangesFromDataFrame(
+	df=peaks_d1, 
+	keep.extra.columns=TRUE, 
+	seqnames.field="V1", 
+	start.field = "V2",
+	end.field = "V3",
+	strand.field = "V6",
+	starts.in.df.are.0based=TRUE
+)
+peaks_e1 <- data.frame(data.table::fread("../7samples/macs_peaks/Fragments_disso_peaks.narrowPeak", sep="\t"))
+peaks_e1 <- makeGRangesFromDataFrame(
+	df=peaks_e1, 
+	keep.extra.columns=TRUE, 
+	seqnames.field="V1", 
+	start.field = "V2",
+	end.field = "V3",
+	strand.field = "V6",
+	starts.in.df.are.0based=TRUE
+)
+peaks_f1 <- data.frame(data.table::fread("../7samples/macs_peaks/Fragments_RA363_peaks.narrowPeak", sep="\t"))
+peaks_f1 <- makeGRangesFromDataFrame(
+	df=peaks_f1, 
+	keep.extra.columns=TRUE, 
+	seqnames.field="V1", 
+	start.field = "V2",
+	end.field = "V3",
+	strand.field = "V6",
+	starts.in.df.are.0based=TRUE
+)
+peaks_g1 <- data.frame(data.table::fread("../7samples/macs_peaks/Fragments_RA385_peaks.narrowPeak", sep="\t"))
+peaks_g1 <- makeGRangesFromDataFrame(
+	df=peaks_g1, 
+	keep.extra.columns=TRUE, 
+	seqnames.field="V1", 
+	start.field = "V2",
+	end.field = "V3",
+	strand.field = "V6",
+	starts.in.df.are.0based=TRUE
+)
+```
+
+```{r}
+peaks <- c(peaks_a1, #peaks_b1, 
+           peaks_c1, peaks_d1, peaks_e1, peaks_f1, peaks_g1)
+
+```
+
+
+## (Optional) Merge peaks within 500bp
+```{r}
+start(peaks) <- start(peaks) - 250 ; end(peaks) <- end(peaks) + 250
+peaks <- reduce(peaks)
+start(peaks) <- start(peaks) + 250 ; end(peaks) <- end(peaks) - 250
+data.frame(peaks)
+```
+
+## Create cell x peak count matrix for later analysis
+```{r}
+proj <- addPeakSet(proj, peaks, force = TRUE)
+proj <- addPeakMatrix(proj)
+```
+
+
+# ChromVAR
+```{r}
+if("Motif" %ni% names(proj@peakAnnotation)){
+    proj <- addMotifAnnotations(ArchRProj = proj, motifSet = "cisbp", name = "Motif", force = TRUE)
+}
+proj <- addBgdPeaks(proj, method = 'ArchR', force = TRUE)
+
+proj <- addDeviationsMatrix(
+  ArchRProj = proj, 
+  peakAnnotation = "Motif",
+  force = TRUE
+)
+
+plotVarDev <- getVarDeviations(proj, name = "MotifMatrix", plot = TRUE,n=300)
+
+```
+
+
